@@ -29,8 +29,8 @@ type MirrorData struct {
 
 type CheckPackageParams interface{}
 
-type MirrorService[StatusInputType any, CheckMirrorSpeedInput any, CheckPackageInput any] interface {
+type MirrorService[StatusInputType any, CheckSpeedInput any, CheckPackageInput any] interface {
 	CheckStatus(mirrorUrl string, verbose bool, params StatusInputType) (bool, *interface{}, error)
-	CheckSpeed(mirrorURL string, timeout int, verbose bool, params CheckMirrorSpeedInput) (float64, *interface{}, error)
+	CheckSpeed(mirrorURL string, timeout int, verbose bool, params CheckSpeedInput) (float64, *interface{}, error)
 	CheckPackage(mirrorUrl, packageName string, verbose bool, params CheckPackageInput) (bool, *interface{}, error)
 }

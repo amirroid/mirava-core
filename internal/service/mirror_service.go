@@ -8,9 +8,9 @@ import (
 
 type MiravaService struct {
 	AptService    mirava_core.MirrorService[*interface{}, *interface{}, AptCheckPackageParams]
-	NpmService    mirava_core.MirrorService[*interface{}, *interface{}, *interface{}]
+	NpmService    mirava_core.MirrorService[*interface{}, *NpmCheckSpeedParams, *interface{}]
 	PypiService   mirava_core.MirrorService[*interface{}, *interface{}, *interface{}]
-	DockerService mirava_core.MirrorService[*interface{}, *interface{}, *interface{}]
+	DockerService mirava_core.MirrorService[*interface{}, *DockerSpeedParams, *interface{}]
 }
 
 func (m *MiravaService) CheckSpeed(mirrorURL string, mirrorType mirava_core.MirrorType, verbose bool) (float64, *interface{}, error) {
