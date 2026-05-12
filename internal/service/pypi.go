@@ -15,7 +15,7 @@ type PyPIMirrorService struct {
 	HttpClient *http.Client
 }
 
-func (m *PyPIMirrorService) CheckMirrorSpeed(mirrorURL string, verbose bool) (float64, *interface{}, error) {
+func (m *PyPIMirrorService) CheckSpeed(mirrorURL string, timeout int, verbose bool, params *interface{}) (float64, *interface{}, error) {
 	// Use the simple index for speed testing (can be large with many packages)
 	baseURL := strings.TrimSuffix(mirrorURL, "/")
 	testURL := baseURL + "/simple/"
@@ -116,7 +116,7 @@ func (m *PyPIMirrorService) CheckMirrorSpeed(mirrorURL string, verbose bool) (fl
 
 // CheckPackage checks if a package exists on a PyPI mirror using the simple API
 // Returns: (exists, version, error)
-func (m *PyPIMirrorService) CheckPackage(mirrorUrl, packageName string, verbose bool) (bool, *interface{}, error) {
+func (m *PyPIMirrorService) CheckPackage(mirrorUrl, packageName string, verbose bool, params *interface{}) (bool, *interface{}, error) {
 	// Use the simple API format: {mirror_url}/simple/{package_name}/
 	baseURL := strings.TrimSuffix(mirrorUrl, "/")
 	packageURL := fmt.Sprintf("%s/simple/%s/", baseURL, packageName)
@@ -211,8 +211,8 @@ func (m *PyPIMirrorService) CheckPackage(mirrorUrl, packageName string, verbose 
 	return true, &iface, nil
 }
 
-// CheckMirrorStatus checks if a PyPI mirror is alive and responding
-func (m *PyPIMirrorService) CheckMirrorStatus(url string, verbose bool) (bool, *interface{}, error) {
+// CheckStatus checks if a PyPI mirror is alive and responding
+func (m *PyPIMirrorService) CheckStatus(url string, verbose bool, params *interface{}) (bool, *interface{}, error) {
 	// Test the simple endpoint for PyPI mirror
 	testURL := strings.TrimSuffix(url, "/") + "/simple/"
 
@@ -275,7 +275,7 @@ func getVersionList(versions map[string]bool) []string {
 }
 
 // NewPyPIMirrorService creates a new PyPI mirror service instance
-func NewPyPIMirrorService() mirava_core.MirrorService {
+func NewPyPIMirrorService() mirava_core.MirrorService[*interface{}, *interface{}, *interface{}] {
 	return &PyPIMirrorService{
 		HttpClient: &http.Client{
 			Timeout: 30 * time.Second,

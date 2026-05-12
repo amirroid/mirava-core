@@ -15,7 +15,7 @@ type NpmMirrorService struct {
 	HttpClient *http.Client
 }
 
-func (m *NpmMirrorService) CheckMirrorSpeed(mirrorURL string, verbose bool) (float64, *interface{}, error) {
+func (m *NpmMirrorService) CheckSpeed(mirrorURL string, timeout int, verbose bool, params *interface{}) (float64, *interface{}, error) {
 	testURL := strings.TrimSuffix(mirrorURL, "/") + "/prisma"
 
 	if verbose {
@@ -128,7 +128,7 @@ func (m *NpmMirrorService) CheckMirrorSpeed(mirrorURL string, verbose bool) (flo
 
 // CheckPackage checks if a package exists on an NPM mirror
 // Returns: (exists, version, error)
-func (m *NpmMirrorService) CheckPackage(mirrorUrl, packageName string, verbose bool) (bool, *interface{}, error) {
+func (m *NpmMirrorService) CheckPackage(mirrorUrl, packageName string, verbose bool, params *interface{}) (bool, *interface{}, error) {
 	// NPM registry API endpoint for package metadata
 	packageURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(mirrorUrl, "/"), packageName)
 
@@ -213,7 +213,7 @@ func (m *NpmMirrorService) CheckPackage(mirrorUrl, packageName string, verbose b
 	return false, nil, nil
 }
 
-func (m *NpmMirrorService) CheckMirrorStatus(url string, verbose bool) (bool, *interface{}, error) {
+func (m *NpmMirrorService) CheckStatus(url string, verbose bool, params *interface{}) (bool, *interface{}, error) {
 	// Test multiple endpoints for NPM mirror
 	testPaths := []struct {
 		path   string
@@ -302,7 +302,7 @@ func getSpeedRating(speedMBps float64) string {
 }
 
 // NewNpmMirrorService creates a new NPM mirror service instance
-func NewNpmMirrorService() mirava_core.MirrorService {
+func NewNpmMirrorService() mirava_core.MirrorService[*interface{}, *interface{}, *interface{}] {
 	return &NpmMirrorService{
 		HttpClient: &http.Client{
 			Timeout: 30 * time.Second,

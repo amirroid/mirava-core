@@ -63,7 +63,7 @@ type RegistryInfo struct {
 	APIVersion        string
 }
 
-func (m *DockerMirrorService) CheckMirrorSpeed(mirrorURL string, verbose bool) (float64, *interface{}, error) {
+func (m *DockerMirrorService) CheckSpeed(mirrorURL string, timeout int, verbose bool, params *interface{}) (float64, *interface{}, error) {
 	registryURL := strings.TrimSuffix(mirrorURL, "/")
 	imageName := "library/ubuntu"
 	tag := "latest"
@@ -328,7 +328,7 @@ func (m *DockerMirrorService) fetchDigestManifest(registryURL, imageName, digest
 // CheckPackage checks if an image exists on a Docker registry mirror
 // For Docker, "package" means an image repository
 // Returns: (exists, latest_tag, error)
-func (m *DockerMirrorService) CheckPackage(mirrorUrl, imageName string, verbose bool) (bool, *interface{}, error) {
+func (m *DockerMirrorService) CheckPackage(mirrorUrl, imageName string, verbose bool, params *interface{}) (bool, *interface{}, error) {
 	// Docker registry v2 API endpoint for image tags
 	baseURL := strings.TrimSuffix(mirrorUrl, "/")
 	tagsURL := fmt.Sprintf("%s/v2/%s/tags/list", baseURL, imageName)
@@ -421,8 +421,8 @@ func (m *DockerMirrorService) CheckPackage(mirrorUrl, imageName string, verbose 
 	return true, &iface, nil
 }
 
-// CheckMirrorStatus checks if a Docker registry mirror is alive and responding
-func (m *DockerMirrorService) CheckMirrorStatus(url string, verbose bool) (bool, *interface{}, error) {
+// CheckStatus checks if a Docker registry mirror is alive and responding
+func (m *DockerMirrorService) CheckStatus(url string, verbose bool, params *interface{}) (bool, *interface{}, error) {
 	baseURL := strings.TrimSuffix(url, "/")
 
 	// Test multiple endpoints with different characteristics
@@ -624,7 +624,7 @@ func (m *DockerMirrorService) getDockerSpeedRating(speedMBps float64) string {
 }
 
 // NewDockerMirrorService creates a new Docker registry mirror service instance
-func NewDockerMirrorService() mirava_core.MirrorService {
+func NewDockerMirrorService() mirava_core.MirrorService[*interface{}, *interface{}, *interface{}] {
 	return &DockerMirrorService{
 		HttpClient: &http.Client{
 			Timeout: 30 * time.Second,
