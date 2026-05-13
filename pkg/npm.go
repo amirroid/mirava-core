@@ -18,13 +18,23 @@ type NpmCheckSpeedParams struct {
 	PackageName string
 }
 
-func (m *NpmMirrorService) CheckSpeed(mirrorURL string, timeout int, verbose bool, params *NpmCheckSpeedParams) (float64, *interface{}, error) {
+func (m *NpmMirrorService) CheckSpeed(
+	mirrorURL string,
+	timeout int,
+	verbose bool,
+	params *NpmCheckSpeedParams,
+) (float64, *interface{}, error) {
 	testPackage := "prisma"
-	if params != nil {
+
+	if params != nil && params.PackageName != "" {
 		testPackage = params.PackageName
 	}
 
-	testURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(mirrorURL, "/"), testPackage)
+	testURL := fmt.Sprintf(
+		"%s/%s",
+		strings.TrimSuffix(mirrorURL, "/"),
+		testPackage,
+	)
 
 	if verbose {
 		fmt.Printf("Testing NPM Mirror speed with: %s\n", testURL)
@@ -32,76 +42,115 @@ func (m *NpmMirrorService) CheckSpeed(mirrorURL string, timeout int, verbose boo
 
 	req, err := http.NewRequest("GET", testURL, nil)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, &HttpRequestError{
+			URL: testURL,
+			Err: err,
+		}
 	}
 
 	req.Header.Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	req.Header.Set("Accept", "application/json")
 
-	// Create a context with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
+	ctx, cancel := context.WithTimeout(
+		context.Background(),
+		time.Duration(timeout)*time.Second,
+	)
 	defer cancel()
 
 	req = req.WithContext(ctx)
 
 	start := time.Now()
+
 	resp, err := m.HttpClient.Do(req)
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			return 0, nil, fmt.Errorf("timeout reached before connection established")
+			return 0, nil, &TimeoutError{
+				URL:     testURL,
+				Timeout: timeout,
+				Err:     ctx.Err(),
+			}
 		}
-		return 0, nil, err
+
+		return 0, nil, &HttpRequestError{
+			URL: testURL,
+			Err: err,
+		}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return 0, nil, fmt.Errorf("HTTP %d for speed test file (expected 200)", resp.StatusCode)
+		return 0, nil, &HttpRequestError{
+			URL:        testURL,
+			StatusCode: resp.StatusCode,
+		}
 	}
 
 	contentLength := resp.ContentLength
+
 	if contentLength > 0 && verbose {
-		fmt.Printf("Content-Length: %.2f MB\n", float64(contentLength)/1024/1024)
+		fmt.Printf(
+			"Content-Length: %.2f MB\n",
+			float64(contentLength)/1024/1024,
+		)
 	}
 
 	var downloaded int64
+
 	buf := make([]byte, 512*1024)
+
 	lastProgress := time.Now()
 
 	if verbose {
 		fmt.Printf("Downloading for up to %d seconds...\n", timeout)
 	}
 
-	// Read until context is done (timeout occurs)
 	for {
-		// Check if timeout occurred
 		select {
 		case <-ctx.Done():
 			if verbose {
-				fmt.Printf("\nTimeout reached after %d seconds\n", timeout)
+				fmt.Printf(
+					"\nTimeout reached after %d seconds\n",
+					timeout,
+				)
 			}
+
 			goto calculateSpeed
+
 		default:
 			n, err := resp.Body.Read(buf)
+
 			if n > 0 {
 				downloaded += int64(n)
 
 				if verbose && time.Since(lastProgress) > 500*time.Millisecond {
 					elapsed := time.Since(start).Seconds()
-					speedMBps := (float64(downloaded) / 1024 / 1024) / elapsed
+
+					speedMBps :=
+						(float64(downloaded) / 1024 / 1024) / elapsed
 
 					if contentLength > 0 {
-						percent := float64(downloaded) / float64(contentLength) * 100
-						fmt.Printf("\r[%ds] %.1f%% (%.2f/%.2f MB) - %.2f MB/s",
-							int(elapsed), percent,
+						percent :=
+							float64(downloaded) /
+								float64(contentLength) *
+								100
+
+						fmt.Printf(
+							"\r[%ds] %.1f%% (%.2f/%.2f MB) - %.2f MB/s",
+							int(elapsed),
+							percent,
 							float64(downloaded)/1024/1024,
 							float64(contentLength)/1024/1024,
-							speedMBps)
+							speedMBps,
+						)
 					} else {
-						fmt.Printf("\r[%ds] Downloaded: %.2f MB - %.2f MB/s",
+						fmt.Printf(
+							"\r[%ds] Downloaded: %.2f MB - %.2f MB/s",
 							int(elapsed),
 							float64(downloaded)/1024/1024,
-							speedMBps)
+							speedMBps,
+						)
 					}
+
 					lastProgress = time.Now()
 				}
 			}
@@ -111,12 +160,18 @@ func (m *NpmMirrorService) CheckSpeed(mirrorURL string, timeout int, verbose boo
 					if verbose {
 						fmt.Println("\nReached end of file")
 					}
+
 					goto calculateSpeed
 				}
+
 				if ctx.Err() == context.DeadlineExceeded {
 					goto calculateSpeed
 				}
-				return 0, nil, err
+
+				return 0, nil, &HttpRequestError{
+					URL: testURL,
+					Err: err,
+				}
 			}
 		}
 	}
@@ -125,15 +180,22 @@ calculateSpeed:
 	duration := time.Since(start).Seconds()
 
 	if verbose {
-		fmt.Printf("\nDownloaded %.2f MB in %.2f seconds\n", float64(downloaded)/1024/1024, duration)
+		fmt.Printf(
+			"\nDownloaded %.2f MB in %.2f seconds\n",
+			float64(downloaded)/1024/1024,
+			duration,
+		)
 	}
 
 	if duration > 0 && downloaded > 0 {
-		speedMBps := (float64(downloaded) / 1024 / 1024) / duration
+		speedMBps :=
+			(float64(downloaded) / 1024 / 1024) / duration
 
 		if verbose {
 			fmt.Printf("Average speed: %.2f MB/s\n", speedMBps)
+
 			rating := getSpeedRating(speedMBps)
+
 			fmt.Printf("Rating: %s\n", rating)
 		}
 
@@ -146,26 +208,41 @@ calculateSpeed:
 			"speed_rating":     getSpeedRating(speedMBps),
 			"bytes_downloaded": downloaded,
 		}
+
 		var iface interface{} = info
+
 		return speedMBps, &iface, nil
 	}
 
-	return 0, nil, fmt.Errorf("speed test failed (downloaded %d bytes in %.2fs)", downloaded, duration)
+	return 0, nil, &SpeedTestError{
+		URL: testURL,
+		Err: fmt.Errorf("failed to speed test %v", testURL),
+	}
 }
 
 // CheckPackage checks if a package exists on an NPM mirror
-// Returns: (exists, version, error)
-func (m *NpmMirrorService) CheckPackage(mirrorUrl, packageName string, verbose bool, params *interface{}) (bool, *interface{}, error) {
-	// NPM registry API endpoint for package metadata
-	packageURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(mirrorUrl, "/"), packageName)
+func (m *NpmMirrorService) CheckPackage(
+	mirrorUrl,
+	packageName string,
+	verbose bool,
+	params *interface{},
+) (bool, *interface{}, error) {
+	packageURL := fmt.Sprintf(
+		"%s/%s",
+		strings.TrimSuffix(mirrorUrl, "/"),
+		packageName,
+	)
 
 	if verbose {
-		fmt.Println("Checking package: ", packageURL)
+		fmt.Println("Checking package:", packageURL)
 	}
 
 	req, err := http.NewRequest("GET", packageURL, nil)
 	if err != nil {
-		return false, nil, err
+		return false, nil, &HttpRequestError{
+			URL: packageURL,
+			Err: err,
+		}
 	}
 
 	req.Header.Set("Cache-Control", "no-cache, no-store, must-revalidate")
@@ -176,72 +253,104 @@ func (m *NpmMirrorService) CheckPackage(mirrorUrl, packageName string, verbose b
 		if verbose {
 			fmt.Printf("Error checking package: %v\n", err)
 		}
-		return false, nil, err
+
+		return false, nil, &HttpRequestError{
+			URL: packageURL,
+			Err: err,
+		}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
 		if verbose {
-			fmt.Printf("Package '%s' not found on mirror\n", packageName)
+			fmt.Printf(
+				"Package '%s' not found on mirror\n",
+				packageName,
+			)
 		}
-		return false, nil, nil
+
+		return false, nil, &PackageNotFoundError{
+			Package: packageName,
+		}
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return false, nil, fmt.Errorf("HTTP %d from registry", resp.StatusCode)
+		return false, nil, &HttpRequestError{
+			URL:        packageURL,
+			StatusCode: resp.StatusCode,
+		}
 	}
 
-	// Parse JSON response
 	var packageData map[string]interface{}
+
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return false, nil, err
+		return false, nil, &ResponseReadError{
+			URL: packageURL,
+			Err: err,
+		}
 	}
 
 	if err := json.Unmarshal(body, &packageData); err != nil {
-		return false, nil, err
+		return false, nil, &JsonParseError{
+			URL: packageURL,
+			Err: err,
+		}
 	}
 
-	// Get the latest version
 	if distTags, ok := packageData["dist-tags"].(map[string]interface{}); ok {
 		if latest, ok := distTags["latest"].(string); ok {
 			if verbose {
-				fmt.Printf("Found package '%s' with latest version: %s\n", packageName, latest)
+				fmt.Printf(
+					"Found package '%s' with latest version: %s\n",
+					packageName,
+					latest,
+				)
 			}
 
-			// Store package info
 			info := map[string]interface{}{
 				"version":   latest,
 				"dist_tags": distTags,
 			}
+
 			var iface interface{} = info
+
 			return true, &iface, nil
 		}
 	}
 
-	// Alternative: get versions
 	if versions, ok := packageData["versions"].(map[string]interface{}); ok {
 		if len(versions) > 0 {
-			// Get the first version as fallback
 			for version := range versions {
 				if verbose {
-					fmt.Printf("Found package '%s' with version: %s\n", packageName, version)
+					fmt.Printf(
+						"Found package '%s' with version: %s\n",
+						packageName,
+						version,
+					)
 				}
 
 				info := map[string]interface{}{
 					"version": version,
 				}
+
 				var iface interface{} = info
+
 				return true, &iface, nil
 			}
 		}
 	}
 
-	return false, nil, nil
+	return false, nil, &PackageNotFoundError{
+		Package: packageName,
+	}
 }
 
-func (m *NpmMirrorService) CheckStatus(url string, verbose bool, params *interface{}) (bool, *interface{}, error) {
-	// Test multiple endpoints for NPM mirror
+func (m *NpmMirrorService) CheckStatus(
+	url string,
+	verbose bool,
+	params *interface{},
+) (bool, *interface{}, error) {
 	testPaths := []struct {
 		path   string
 		method string
@@ -254,7 +363,10 @@ func (m *NpmMirrorService) CheckStatus(url string, verbose bool, params *interfa
 		testURL := strings.TrimSuffix(url, "/") + test.path
 
 		if verbose {
-			fmt.Printf("Testing NPM mirror endpoint: %s\n", testURL)
+			fmt.Printf(
+				"Testing NPM mirror endpoint: %s\n",
+				testURL,
+			)
 		}
 
 		req, err := http.NewRequest(test.method, testURL, nil)
@@ -262,7 +374,11 @@ func (m *NpmMirrorService) CheckStatus(url string, verbose bool, params *interfa
 			continue
 		}
 
-		req.Header.Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		req.Header.Set(
+			"Cache-Control",
+			"no-cache, no-store, must-revalidate",
+		)
+
 		if test.path == "/-/v1/search?text=test&size=1" {
 			req.Header.Set("Accept", "application/json")
 		}
@@ -272,14 +388,18 @@ func (m *NpmMirrorService) CheckStatus(url string, verbose bool, params *interfa
 			if verbose {
 				fmt.Printf("Error checking endpoint: %v\n", err)
 			}
+
 			continue
 		}
 		defer resp.Body.Close()
 
-		// Check if we got a successful response
 		if resp.StatusCode == http.StatusOK {
 			if verbose {
-				fmt.Printf("Mirror responded to %s with status %d\n", test.path, resp.StatusCode)
+				fmt.Printf(
+					"Mirror responded to %s with status %d\n",
+					test.path,
+					resp.StatusCode,
+				)
 			}
 
 			info := map[string]interface{}{
@@ -288,17 +408,22 @@ func (m *NpmMirrorService) CheckStatus(url string, verbose bool, params *interfa
 				"status_code": resp.StatusCode,
 				"mirror_type": "npm",
 			}
+
 			var iface interface{} = info
+
 			return true, &iface, nil
 		}
 
-		// Some mirrors redirect to the official registry
 		if resp.StatusCode >= 300 && resp.StatusCode < 400 {
 			location := resp.Header.Get("Location")
+
 			if verbose {
-				fmt.Printf("Mirror redirects to: %s\n", location)
+				fmt.Printf(
+					"Mirror redirects to: %s\n",
+					location,
+				)
 			}
-			// If it redirects, it's still functional
+
 			info := map[string]interface{}{
 				"status":      "redirect",
 				"tested_path": test.path,
@@ -306,12 +431,16 @@ func (m *NpmMirrorService) CheckStatus(url string, verbose bool, params *interfa
 				"redirect_to": location,
 				"mirror_type": "npm",
 			}
+
 			var iface interface{} = info
+
 			return true, &iface, nil
 		}
 	}
 
-	return false, nil, fmt.Errorf("mirror does not appear to be a valid NPM registry")
+	return false, nil, &InvalidMirrorError{
+		URL: url,
+	}
 }
 
 // Helper function to get speed rating
@@ -319,17 +448,24 @@ func getSpeedRating(speedMBps float64) string {
 	switch {
 	case speedMBps > 20:
 		return "Excellent"
+
 	case speedMBps > 10:
 		return "Good"
+
 	case speedMBps > 5:
 		return "Average"
+
 	default:
 		return "Slow"
 	}
 }
 
 // NewNpmMirrorService creates a new NPM mirror service instance
-func NewNpmMirrorService() MirrorService[*interface{}, *NpmCheckSpeedParams, *interface{}] {
+func NewNpmMirrorService() MirrorService[
+	*interface{},
+	*NpmCheckSpeedParams,
+	*interface{},
+] {
 	return &NpmMirrorService{
 		HttpClient: &http.Client{
 			Timeout: 30 * time.Second,

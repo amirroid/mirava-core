@@ -28,7 +28,10 @@ func (m *PyPIMirrorService) CheckSpeed(mirrorURL string, timeout int, verbose bo
 
 	req, err := http.NewRequestWithContext(ctx, "GET", testURL, nil)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, &HttpRequestError{
+			URL: testURL,
+			Err: err,
+		}
 	}
 
 	req.Header.Set("Cache-Control", "no-cache, no-store, must-revalidate")
@@ -37,14 +40,24 @@ func (m *PyPIMirrorService) CheckSpeed(mirrorURL string, timeout int, verbose bo
 	resp, err := m.HttpClient.Do(req)
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			return 0, nil, fmt.Errorf("timeout reached before connection established")
+			return 0, nil, &HttpRequestError{
+				URL: testURL,
+				Err: fmt.Errorf("timeout reached before connection established"),
+			}
 		}
-		return 0, nil, err
+
+		return 0, nil, &HttpRequestError{
+			URL: testURL,
+			Err: err,
+		}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return 0, nil, fmt.Errorf("HTTP %d for speed test (expected 200)", resp.StatusCode)
+		return 0, nil, &HttpRequestError{
+			URL: testURL,
+			Err: fmt.Errorf("HTTP %d for speed test (expected 200)", resp.StatusCode),
+		}
 	}
 
 	var downloaded int64
@@ -61,18 +74,24 @@ func (m *PyPIMirrorService) CheckSpeed(mirrorURL string, timeout int, verbose bo
 		case <-ctx.Done():
 			// Timeout reached
 			goto calculateSpeed
+
 		default:
 			n, err := resp.Body.Read(buf)
+
 			if n > 0 {
 				downloaded += int64(n)
 
 				if verbose && time.Since(lastProgress) > 500*time.Millisecond {
 					elapsed := time.Since(start).Seconds()
 					speedMBps := (float64(downloaded) / 1024 / 1024) / elapsed
-					fmt.Printf("\r[%ds] Downloaded: %.2f MB - %.2f MB/s",
+
+					fmt.Printf(
+						"\r[%ds] Downloaded: %.2f MB - %.2f MB/s",
 						int(elapsed),
 						float64(downloaded)/1024/1024,
-						speedMBps)
+						speedMBps,
+					)
+
 					lastProgress = time.Now()
 				}
 			}
@@ -82,9 +101,14 @@ func (m *PyPIMirrorService) CheckSpeed(mirrorURL string, timeout int, verbose bo
 					if verbose {
 						fmt.Println()
 					}
+
 					goto calculateSpeed
 				}
-				return 0, nil, err
+
+				return 0, nil, &HttpRequestError{
+					URL: testURL,
+					Err: err,
+				}
 			}
 		}
 	}
@@ -93,8 +117,11 @@ calculateSpeed:
 	duration := time.Since(start).Seconds()
 
 	if verbose {
-		fmt.Printf("\nDownloaded %.2f MB in %.2f seconds\n",
-			float64(downloaded)/1024/1024, duration)
+		fmt.Printf(
+			"\nDownloaded %.2f MB in %.2f seconds\n",
+			float64(downloaded)/1024/1024,
+			duration,
+		)
 	}
 
 	if duration > 0 && downloaded > 0 {
@@ -102,6 +129,7 @@ calculateSpeed:
 
 		if verbose {
 			fmt.Printf("Average speed: %.2f MB/s\n", speedMBps)
+			fmt.Printf("Rating: %s\n", getPyPISpeedRating(speedMBps))
 		}
 
 		info := map[string]interface{}{
@@ -109,12 +137,21 @@ calculateSpeed:
 			"duration_sec":  duration,
 			"timeout_sec":   timeout,
 			"speed_mbps":    speedMBps,
+			"speed_rating":  getPyPISpeedRating(speedMBps),
 		}
+
 		var iface interface{} = info
 		return speedMBps, &iface, nil
 	}
 
-	return 0, nil, fmt.Errorf("speed test failed (downloaded %d bytes in %.2fs)", downloaded, duration)
+	return 0, nil, &HttpRequestError{
+		URL: testURL,
+		Err: fmt.Errorf(
+			"speed test failed (downloaded %d bytes in %.2fs)",
+			downloaded,
+			duration,
+		),
+	}
 }
 
 // CheckPackage checks if a package exists on a PyPI mirror using the simple API
@@ -130,7 +167,10 @@ func (m *PyPIMirrorService) CheckPackage(mirrorUrl, packageName string, verbose 
 
 	req, err := http.NewRequest("GET", packageURL, nil)
 	if err != nil {
-		return false, nil, err
+		return false, nil, &HttpRequestError{
+			URL: packageURL,
+			Err: err,
+		}
 	}
 
 	req.Header.Set("Cache-Control", "no-cache, no-store, must-revalidate")
@@ -140,7 +180,11 @@ func (m *PyPIMirrorService) CheckPackage(mirrorUrl, packageName string, verbose 
 		if verbose {
 			fmt.Printf("Error checking package: %v\n", err)
 		}
-		return false, nil, err
+
+		return false, nil, &HttpRequestError{
+			URL: packageURL,
+			Err: err,
+		}
 	}
 	defer resp.Body.Close()
 
@@ -148,25 +192,33 @@ func (m *PyPIMirrorService) CheckPackage(mirrorUrl, packageName string, verbose 
 		if verbose {
 			fmt.Printf("Package '%s' not found on mirror\n", packageName)
 		}
+
 		return false, nil, nil
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return false, nil, fmt.Errorf("HTTP %d from PyPI mirror", resp.StatusCode)
+		return false, nil, &HttpRequestError{
+			URL: packageURL,
+			Err: fmt.Errorf("HTTP %d from PyPI mirror", resp.StatusCode),
+		}
 	}
 
 	// Parse the HTML response to find the latest version
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return false, nil, err
+		return false, nil, &HttpRequestError{
+			URL: packageURL,
+			Err: err,
+		}
 	}
 
 	// Extract version numbers from the HTML
-	// The simple index contains links like: <a href="fastapi-0.104.1.tar.gz">fastapi-0.104.1.tar.gz</a>
-	// or <a href="../../packages/.../fastapi-0.104.1-py3-none-any.whl">fastapi-0.104.1-py3-none-any.whl</a>
-
-	// Regex to find version numbers in package files
-	versionRegex := regexp.MustCompile(fmt.Sprintf(`%s-([0-9]+(?:\.[0-9]+)*(?:[a-z]?[0-9]*)?)`, regexp.QuoteMeta(packageName)))
+	versionRegex := regexp.MustCompile(
+		fmt.Sprintf(
+			`%s-([0-9]+(?:\.[0-9]+)*(?:[a-z]?[0-9]*)?)`,
+			regexp.QuoteMeta(packageName),
+		),
+	)
 
 	versions := make(map[string]bool)
 	matches := versionRegex.FindAllStringSubmatch(string(body), -1)
@@ -178,8 +230,9 @@ func (m *PyPIMirrorService) CheckPackage(mirrorUrl, packageName string, verbose 
 	}
 
 	if len(versions) > 0 {
-		// Find the latest version (simple string comparison works for semantic versioning)
+		// Find the latest version
 		var latestVersion string
+
 		for version := range versions {
 			if latestVersion == "" || version > latestVersion {
 				latestVersion = version
@@ -187,8 +240,12 @@ func (m *PyPIMirrorService) CheckPackage(mirrorUrl, packageName string, verbose 
 		}
 
 		if verbose {
-			fmt.Printf("Found package '%s' with latest version: %s (%d versions available)\n",
-				packageName, latestVersion, len(versions))
+			fmt.Printf(
+				"Found package '%s' with latest version: %s (%d versions available)\n",
+				packageName,
+				latestVersion,
+				len(versions),
+			)
 		}
 
 		// Store package info
@@ -197,6 +254,7 @@ func (m *PyPIMirrorService) CheckPackage(mirrorUrl, packageName string, verbose 
 			"versions_count": len(versions),
 			"all_versions":   getVersionList(versions),
 		}
+
 		var iface interface{} = info
 		return true, &iface, nil
 	}
@@ -210,6 +268,7 @@ func (m *PyPIMirrorService) CheckPackage(mirrorUrl, packageName string, verbose 
 		"version": "unknown",
 		"exists":  true,
 	}
+
 	var iface interface{} = info
 	return true, &iface, nil
 }
@@ -225,14 +284,20 @@ func (m *PyPIMirrorService) CheckStatus(url string, verbose bool, params *interf
 
 	req, err := http.NewRequest("GET", testURL, nil)
 	if err != nil {
-		return false, nil, err
+		return false, nil, &HttpRequestError{
+			URL: testURL,
+			Err: err,
+		}
 	}
 
 	req.Header.Set("Cache-Control", "no-cache, no-store, must-revalidate")
 
 	resp, err := m.HttpClient.Do(req)
 	if err != nil {
-		return false, nil, err
+		return false, nil, &HttpRequestError{
+			URL: testURL,
+			Err: err,
+		}
 	}
 	defer resp.Body.Close()
 
@@ -247,11 +312,18 @@ func (m *PyPIMirrorService) CheckStatus(url string, verbose bool, params *interf
 			"status_code": resp.StatusCode,
 			"mirror_type": "pypi",
 		}
+
 		var iface interface{} = info
 		return true, &iface, nil
 	}
 
-	return false, nil, fmt.Errorf("mirror does not appear to be a valid PyPI mirror (simple endpoint returned %d)", resp.StatusCode)
+	return false, nil, &HttpRequestError{
+		URL: testURL,
+		Err: fmt.Errorf(
+			"mirror does not appear to be a valid PyPI mirror (simple endpoint returned %d)",
+			resp.StatusCode,
+		),
+	}
 }
 
 // Helper function to get PyPI speed rating
@@ -271,9 +343,11 @@ func getPyPISpeedRating(speedMBps float64) string {
 // Helper function to convert version map to slice
 func getVersionList(versions map[string]bool) []string {
 	versionList := make([]string, 0, len(versions))
+
 	for version := range versions {
 		versionList = append(versionList, version)
 	}
+
 	return versionList
 }
 

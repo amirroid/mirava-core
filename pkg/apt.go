@@ -8,8 +8,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-
-	"github.com/go-playground/validator/v10"
 )
 
 // AptMirrorService implements the MirrorService interface for apt mirrors
@@ -110,7 +108,7 @@ func (m *AptMirrorService) CheckStatus(mirrorURL string, verbose bool, params *i
 
 	statusInfo.Message = "Mirror not responding or not a valid apt mirror"
 	additionalData := interface{}(statusInfo)
-	return false, &additionalData, fmt.Errorf("mirror not responding or not a valid apt mirror")
+	return false, &additionalData, &InvalidMirrorError{URL: mirrorURL}
 }
 
 // CheckSpeed implements MirrorService.CheckMirrorSpeed
@@ -136,12 +134,12 @@ func (m *AptMirrorService) CheckSpeed(mirrorURL string, timeout int, verbose boo
 	start := time.Now()
 	resp, err := m.HttpClient.Do(req)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, &HttpRequestError{URL: testURL, Err: err}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return 0, nil, fmt.Errorf("HTTP %d for test file", resp.StatusCode)
+		return 0, nil, &HttpRequestError{StatusCode: resp.StatusCode, URL: testURL}
 	}
 
 	minBytes := int64(1 * 1024 * 1024) // 1MB minimum for accurate speed test
@@ -286,32 +284,6 @@ func (m *AptMirrorService) checkPackagesFile(client *http.Client, packagesURL, p
 	}
 
 	return false, "", nil
-}
-
-var validate = validator.New()
-
-func ValidateAptParams(params interface{}) (*AptCheckPackageParams, error) {
-	var aptParams AptCheckPackageParams
-
-	switch p := params.(type) {
-	case AptCheckPackageParams:
-		aptParams = p
-	case *AptCheckPackageParams:
-		if p == nil {
-			return nil, fmt.Errorf("params cannot be nil")
-		}
-		aptParams = *p
-	default:
-		return nil, fmt.Errorf("invalid params type: expected AptCheckPackageParams")
-	}
-
-	// Validate using the library
-	err := validate.Struct(aptParams)
-	if err != nil {
-		return nil, err
-	}
-
-	return &aptParams, nil
 }
 
 func NewAptMirrorService() MirrorService[*interface{}, *interface{}, AptCheckPackageParams] {
