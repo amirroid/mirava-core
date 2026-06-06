@@ -34,6 +34,13 @@ type PyPiCheckStatusData struct {
 	StatusCode int
 }
 
+// PyPIStatusResponse represents the response from checking a PyPI mirror status
+type PyPIStatusResponse struct {
+	Status     string `json:"status"`      // Status of the mirror (e.g., "active")
+	TestedPath string `json:"tested_path"` // The endpoint that was tested (e.g., "/simple/")
+	StatusCode int    `json:"status_code"` // HTTP status code from the response
+}
+
 func (m *PyPIMirrorService) CheckSpeed(mirrorURL string, timeout int, verbose bool) (float64, *PyPiCheckSpeedData, error) {
 	baseURL := strings.TrimSuffix(mirrorURL, "/")
 	testURL := baseURL + "/simple/"
@@ -290,7 +297,7 @@ func (m *PyPIMirrorService) CheckPackage(mirrorUrl, packageName string, verbose 
 }
 
 // CheckStatus checks if a PyPI mirror is alive and responding
-func (m *PyPIMirrorService) CheckStatus(url string, verbose bool) (bool, *interface{}, error) {
+func (m *PyPIMirrorService) CheckStatus(url string, verbose bool) (bool, *PyPIStatusResponse, error) {
 	// Test the simple endpoint for PyPI mirror
 	testURL := strings.TrimSuffix(url, "/") + "/simple/"
 
@@ -322,14 +329,13 @@ func (m *PyPIMirrorService) CheckStatus(url string, verbose bool) (bool, *interf
 			fmt.Printf("Mirror responded to /simple/ with status %d\n", resp.StatusCode)
 		}
 
-		info := map[string]interface{}{
-			"status":      "active",
-			"tested_path": "/simple/",
-			"status_code": resp.StatusCode,
+		response := &PyPIStatusResponse{
+			Status:     "active",
+			TestedPath: "/simple/",
+			StatusCode: resp.StatusCode,
 		}
 
-		var iface interface{} = info
-		return true, &iface, nil
+		return true, response, nil
 	}
 
 	return false, nil, &HttpRequestError{

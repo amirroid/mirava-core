@@ -44,12 +44,12 @@ func (m *NpmMirrorService) CheckSpeed(
 	mirrorURL string,
 	timeout int,
 	verbose bool,
-	params *NpmCheckSpeedParams,
+	packageName *string,
 ) (float64, *NpmCheckSpeedData, error) {
 	testPackage := "prisma"
 
-	if params != nil && params.PackageName != "" {
-		testPackage = params.PackageName
+	if packageName != nil && *packageName != "" {
+		testPackage = *packageName
 	}
 
 	testURL := fmt.Sprintf(

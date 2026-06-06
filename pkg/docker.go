@@ -96,13 +96,13 @@ func (m *DockerMirrorService) CheckSpeed(
 	mirrorURL string,
 	timeout int,
 	verbose bool,
-	params *DockerSpeedParams,
+	imgName *string,
 ) (float64, *DockerCheckSpeedData, error) {
 
 	imageName := "library/ubuntu"
 
-	if params != nil {
-		imageName = strings.Replace(params.ImageName, "library/", "", 1)
+	if imgName != nil {
+		imageName = strings.Replace(*imgName, "library/", "", 1)
 		imageName = fmt.Sprintf("library/%s", imageName)
 	}
 
