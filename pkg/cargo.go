@@ -18,10 +18,6 @@ type CargoMirrorService struct {
 	HttpClient *http.Client
 }
 
-type CargoCheckSpeedParams struct {
-	PackageName string
-}
-
 type CargoCheckSpeedData struct {
 	DownloadMb      float64
 	DurationSec     float64
@@ -183,11 +179,11 @@ func (m *CargoMirrorService) CheckSpeed(
 	mirrorURL string,
 	timeout int,
 	verbose bool,
-	params *CargoCheckSpeedParams,
+	packageName *string,
 ) (float64, *CargoCheckSpeedData, error) {
 	testCrate := "serde"
-	if params != nil && strings.TrimSpace(params.PackageName) != "" {
-		testCrate = strings.TrimSpace(params.PackageName)
+	if packageName != nil && strings.TrimSpace(*packageName) != "" {
+		testCrate = strings.TrimSpace(*packageName)
 	}
 
 	testURL, err := cargoCrateIndexURL(mirrorURL, testCrate)

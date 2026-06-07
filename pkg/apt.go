@@ -3,6 +3,7 @@ package pkg
 import (
 	"bufio"
 	"compress/gzip"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -32,6 +33,9 @@ type AptCheckSpeedData struct {
 	TestURL         string  `json:"test_url"`
 	BytesDownloaded int64   `json:"bytes_downloaded"`
 	TargetBytes     int64   `json:"target_bytes"`
+	ContentLength   int64   `json:"content_length"`
+	TimeoutSec      int     `json:"timeout_sec"`
+	SpeedRating     string  `json:"speed_rating"`
 	Message         string  `json:"message"`
 }
 
@@ -118,9 +122,9 @@ func (m *AptMirrorService) CheckStatus(mirrorURL string, verbose bool) (bool, *A
 func (m *AptMirrorService) CheckSpeed(mirrorURL string, timeout int, verbose bool) (float64, *AptCheckSpeedData, error) {
 	testURL := mirrorURL + "/ls-lR.gz"
 
-	speedInfo := AptCheckSpeedData{
-		TestURL:     testURL,
-		TargetBytes: 1 * 1024 * 1024, // 1MB
+	speedInfo := &AptCheckSpeedData{
+		TestURL:    testURL,
+		TimeoutSec: timeout,
 	}
 
 	if verbose {
@@ -129,15 +133,27 @@ func (m *AptMirrorService) CheckSpeed(mirrorURL string, timeout int, verbose boo
 
 	req, err := http.NewRequest("GET", testURL, nil)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, &HttpRequestError{URL: testURL, Err: err}
 	}
 
 	req.Header.Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	req.Header.Set("User-Agent", USER_AGENT)
 
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
+	defer cancel()
+
+	req = req.WithContext(ctx)
+
 	start := time.Now()
 	resp, err := m.HttpClient.Do(req)
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return 0, nil, &TimeoutError{
+				URL:     testURL,
+				Timeout: timeout,
+				Err:     ctx.Err(),
+			}
+		}
 		return 0, nil, &HttpRequestError{URL: testURL, Err: err}
 	}
 	defer resp.Body.Close()
@@ -146,38 +162,105 @@ func (m *AptMirrorService) CheckSpeed(mirrorURL string, timeout int, verbose boo
 		return 0, nil, &HttpRequestError{StatusCode: resp.StatusCode, URL: testURL}
 	}
 
-	minBytes := int64(1 * 1024 * 1024) // 1MB minimum for accurate speed test
-	var downloaded int64
-	buf := make([]byte, 32*1024)
+	contentLength := resp.ContentLength
+	speedInfo.ContentLength = contentLength
 
-	for downloaded < minBytes && time.Since(start) < 5*time.Second {
-		n, err := resp.Body.Read(buf)
-		if n > 0 {
-			downloaded += int64(n)
-		}
-		if err != nil {
-			if err == io.EOF {
-				break
+	if verbose && contentLength > 0 {
+		fmt.Printf("Content-Length: %.2f MB\n", float64(contentLength)/1024/1024)
+	}
+
+	var downloaded int64
+	buf := make([]byte, 512*1024) // 512KB buffer for faster downloads
+	lastProgress := time.Now()
+
+	if verbose {
+		fmt.Printf("Downloading for up to %d seconds...\n", timeout)
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			if verbose {
+				fmt.Printf("\nTimeout reached after %d seconds\n", timeout)
 			}
-			return 0, nil, err
+			goto calculateSpeed
+
+		default:
+			n, err := resp.Body.Read(buf)
+
+			if n > 0 {
+				downloaded += int64(n)
+
+				if verbose && time.Since(lastProgress) > 500*time.Millisecond {
+					elapsed := time.Since(start).Seconds()
+					speedMBps := (float64(downloaded) / 1024 / 1024) / elapsed
+
+					if contentLength > 0 {
+						percent := float64(downloaded) / float64(contentLength) * 100
+						fmt.Printf("\r[%ds] %.1f%% (%.2f/%.2f MB) - %.2f MB/s",
+							int(elapsed), percent,
+							float64(downloaded)/1024/1024,
+							float64(contentLength)/1024/1024,
+							speedMBps)
+					} else {
+						fmt.Printf("\r[%ds] Downloaded: %.2f MB - %.2f MB/s",
+							int(elapsed),
+							float64(downloaded)/1024/1024,
+							speedMBps)
+					}
+					lastProgress = time.Now()
+				}
+			}
+
+			if err != nil {
+				if err == io.EOF {
+					if verbose {
+						fmt.Println("\nReached end of file")
+					}
+					goto calculateSpeed
+				}
+
+				if ctx.Err() == context.DeadlineExceeded {
+					goto calculateSpeed
+				}
+
+				return 0, nil, &HttpRequestError{URL: testURL, Err: err}
+			}
 		}
 	}
 
+calculateSpeed:
 	duration := time.Since(start).Seconds()
+
+	if verbose {
+		fmt.Printf("\nDownloaded %.2f MB in %.2f seconds\n",
+			float64(downloaded)/1024/1024,
+			duration)
+	}
+
 	if duration > 0 && downloaded > 0 {
 		speedMBps := (float64(downloaded) / 1024 / 1024) / duration
 
-		// Fill speed info
+		if verbose {
+			fmt.Printf("Average speed: %.2f MB/s\n", speedMBps)
+			rating := getAptSpeedRating(speedMBps)
+			fmt.Printf("Rating: %s\n", rating)
+		}
+
 		speedInfo.SpeedMBps = speedMBps
 		speedInfo.DownloadedMB = float64(downloaded) / 1024 / 1024
 		speedInfo.DurationSec = duration
 		speedInfo.BytesDownloaded = downloaded
+		speedInfo.SpeedRating = getAptSpeedRating(speedMBps)
 
-		return speedMBps, &speedInfo, nil
+		return speedMBps, speedInfo, nil
 	}
 
 	speedInfo.Message = fmt.Sprintf("Speed test failed (downloaded %d bytes in %.2fs)", downloaded, duration)
-	return 0, &speedInfo, fmt.Errorf("speed test failed (downloaded %d bytes in %.2fs)", downloaded, duration)
+	return 0, speedInfo, &SpeedTestError{
+		URL: testURL,
+		Err: fmt.Errorf("speed test failed (downloaded %d bytes in %.2fs)", downloaded, duration),
+	}
 }
 
 // CheckPackage implements MirrorService.CheckPackage
@@ -278,15 +361,31 @@ func (m *AptMirrorService) checkPackagesFile(client *http.Client, packagesURL, p
 	return false, "", nil
 }
 
+// getAptSpeedRating returns a rating based on download speed in MB/s
+func getAptSpeedRating(speedMBps float64) string {
+	switch {
+	case speedMBps > 10:
+		return "Excellent"
+	case speedMBps > 5:
+		return "Good"
+	case speedMBps > 2:
+		return "Average"
+	default:
+		return "Slow"
+	}
+}
+
+// NewAptMirrorService creates a new APT mirror service instance
 func NewAptMirrorService() *AptMirrorService {
 	return &AptMirrorService{
 		HttpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: 0,
 			Transport: &http.Transport{
-				DisableCompression: false, // Allow compression for speed
-				DisableKeepAlives:  false,
-				MaxIdleConns:       10,
-				IdleConnTimeout:    30 * time.Second,
+				DisableCompression:  false,
+				DisableKeepAlives:   false,
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 10,
+				IdleConnTimeout:     90 * time.Second,
 			},
 		},
 	}
