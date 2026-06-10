@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -273,68 +274,46 @@ calculateSpeed:
 	}
 }
 
-// CheckPackage implements MirrorService.CheckPackage
+// CheckPackage checks whether packageName exists in a specific suite/component/arch.
+// It delegates to GetPackageVersion with a narrowed search scope.
 func (m *AptMirrorService) CheckPackage(mirrorURL, packageName string, verbose bool, params AptCheckPackageParams) (bool, *AptCheckPackageData, error) {
+	packagesURL := fmt.Sprintf("%s/dists/%s/%s/binary-%s/Packages.gz",
+		strings.TrimSuffix(strings.TrimSpace(mirrorURL), "/"),
+		params.Release, params.Component, params.Arch)
+
 	packageInfo := AptCheckPackageData{
 		Exists:       false,
 		PackageName:  packageName,
-		CheckedPaths: []string{},
+		CheckedPaths: []string{packagesURL},
+		Release:      params.Release,
+		Component:    params.Component,
 		Arch:         params.Arch,
 	}
-
-	client := m.aptHTTPClient()
-
-	packagesURL := fmt.Sprintf("%s/dists/%s/%s/binary-%s/Packages.gz",
-		mirrorURL, params.Release, params.Component, params.Arch)
-
-	packageInfo.CheckedPaths = append(packageInfo.CheckedPaths, packagesURL)
 
 	if verbose {
 		fmt.Println("Checking package in:", packagesURL)
 	}
 
-	exists, version, err := m.checkPackagesFile(client, packagesURL, packageName)
+	result, err := m.GetPackageVersion(mirrorURL, packageName, &AptPackageVersionSearch{
+		Suite:     params.Release,
+		Component: params.Component,
+		Arch:      params.Arch,
+	})
 	if err != nil {
 		if verbose {
 			fmt.Printf("Error checking %s: %v\n", packagesURL, err)
 		}
+		return false, &packageInfo, nil
 	}
 
-	if exists {
-		packageInfo.Exists = true
-		packageInfo.Version = version
-		packageInfo.Release = params.Release
-		packageInfo.Component = params.Component
-		packageInfo.FoundPath = packagesURL
+	packageInfo.Exists = true
+	packageInfo.Version = result.Version
+	packageInfo.Release = result.Suite
+	packageInfo.Component = result.Component
+	packageInfo.Arch = result.Arch
+	packageInfo.FoundPath = result.IndexPath
 
-		return true, &packageInfo, nil
-	}
-
-	return false, &packageInfo, nil
-}
-
-// checkPackagesFile is an internal helper to parse Packages.gz files.
-func (m *AptMirrorService) checkPackagesFile(client *http.Client, packagesURL, packageName string) (bool, string, error) {
-	body, err := m.fetchMirrorFile(client, packagesURL)
-	if err != nil {
-		return false, "", err
-	}
-
-	reader, err := decompressAptIndex(body, "Packages.gz")
-	if err != nil {
-		return false, "", err
-	}
-	defer closeAptReader(reader)
-
-	candidate, err := findLatestPackageInIndex(reader, packageName)
-	if err != nil {
-		return false, "", err
-	}
-	if candidate == nil {
-		return false, "", nil
-	}
-
-	return true, candidate.Version, nil
+	return true, &packageInfo, nil
 }
 
 // getAptSpeedRating returns a rating based on download speed in MB/s

@@ -116,7 +116,16 @@ func (m *AptMirrorService) GetPackageVersion(
 	useComponentWaves := search == nil || search.Component == ""
 	best := m.searchPackageIndexes(client, repositoryURL, searchPaths, packageName, useComponentWaves)
 	if best == nil {
-		return nil, &PackageNotFoundError{Package: packageName}
+		notFound := &PackageNotFoundError{Package: packageName}
+		if search != nil {
+			notFound.Release = search.Suite
+			notFound.Component = search.Component
+			notFound.Arch = search.Arch
+			if notFound.Arch == "" {
+				notFound.Arch = aptPreferredArch
+			}
+		}
+		return nil, notFound
 	}
 
 	result := &AptPackageVersionData{
@@ -420,13 +429,21 @@ func narrowAptSearchPaths(paths []aptIndexPath, search *AptPackageVersionSearch)
 		arch = aptPreferredArch
 	}
 
+	exactSuite := search.Suite != "" && search.Component != ""
+
 	filtered := make([]aptIndexPath, 0, len(paths))
 	for _, path := range paths {
 		if path.Arch != arch || path.File != aptPackagesFile {
 			continue
 		}
-		if search.Suite != "" && path.Suite != search.Suite && suiteCodename(path.Suite) != search.Suite {
-			continue
+		if search.Suite != "" {
+			if exactSuite {
+				if path.Suite != search.Suite {
+					continue
+				}
+			} else if path.Suite != search.Suite && suiteCodename(path.Suite) != search.Suite {
+				continue
+			}
 		}
 		if search.Component != "" && path.Component != search.Component {
 			continue
@@ -434,7 +451,7 @@ func narrowAptSearchPaths(paths []aptIndexPath, search *AptPackageVersionSearch)
 		filtered = append(filtered, path)
 	}
 
-	if search.Suite != "" && !strings.Contains(search.Suite, "-") {
+	if search.Suite != "" && !exactSuite && !strings.Contains(search.Suite, "-") {
 		codename := search.Suite
 		next := make([]aptIndexPath, 0, len(filtered))
 		for _, path := range filtered {
