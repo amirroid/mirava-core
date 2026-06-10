@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -258,52 +259,72 @@ func (m *Mirror) lookupPackageParallel(
 		return nil
 	}
 	if len(paths) == 1 {
-		candidate, err := m.lookupPackageInIndex(client, repositoryURL, paths[0], packageName)
+		candidate, err := m.lookupPackageInIndex(context.Background(), client, repositoryURL, paths[0], packageName)
 		if err != nil || candidate == nil {
 			return nil
 		}
 		return candidate
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	resultCh := make(chan *aptPackageCandidate, 1)
 	sem := make(chan struct{}, aptIndexLookupWorkers)
-	var (
-		mu   sync.Mutex
-		best *aptPackageCandidate
-		wg   sync.WaitGroup
-	)
+	var wg sync.WaitGroup
 
 	for _, path := range paths {
 		wg.Add(1)
 		go func(path aptIndexPath) {
 			defer wg.Done()
 
-			sem <- struct{}{}
-			defer func() { <-sem }()
+			if err := ctx.Err(); err != nil {
+				return
+			}
 
-			candidate, err := m.lookupPackageInIndex(client, repositoryURL, path, packageName)
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				return
+			}
+
+			candidate, err := m.lookupPackageInIndex(ctx, client, repositoryURL, path, packageName)
 			if err != nil || candidate == nil {
 				return
 			}
 
-			mu.Lock()
-			if best == nil || debVersionGreaterThan(candidate.Version, best.Version) {
-				copyCandidate := *candidate
-				best = &copyCandidate
+			select {
+			case resultCh <- candidate:
+				cancel()
+			case <-ctx.Done():
 			}
-			mu.Unlock()
 		}(path)
 	}
 
-	wg.Wait()
-	return best
+	go func() {
+		wg.Wait()
+		close(resultCh)
+	}()
+
+	candidate, ok := <-resultCh
+	if !ok {
+		return nil
+	}
+	return candidate
 }
 
 func (m *Mirror) lookupPackageInIndex(
+	ctx context.Context,
 	client *http.Client,
 	repositoryURL string,
 	indexPath aptIndexPath,
 	packageName string,
 ) (*aptPackageCandidate, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	indexURL := fmt.Sprintf(
 		"%s/dists/%s/%s/binary-%s/%s",
 		repositoryURL,
@@ -313,7 +334,7 @@ func (m *Mirror) lookupPackageInIndex(
 		indexPath.File,
 	)
 
-	body, err := m.FetchMirrorFile(client, indexURL)
+	body, err := m.fetchMirrorFile(ctx, client, indexURL)
 	if err != nil {
 		return nil, err
 	}
@@ -340,12 +361,20 @@ func (m *Mirror) lookupPackageInIndex(
 }
 
 func (m *Mirror) FetchMirrorFile(client *http.Client, rawURL string) (io.ReadCloser, error) {
+	return m.fetchMirrorFile(context.Background(), client, rawURL)
+}
+
+func (m *Mirror) fetchMirrorFile(ctx context.Context, client *http.Client, rawURL string) (io.ReadCloser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	cache := m.mirrorCache()
 	if data, ok := cache.getListFile(rawURL); ok {
 		return io.NopCloser(bytes.NewReader(data)), nil
 	}
 
-	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, err
 	}
