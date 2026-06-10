@@ -1,22 +1,31 @@
 package pkg
 
 import (
-	"bufio"
-	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
+	"sync"
 	"time"
+
+	"github.com/MiravaOrg/mirava-core/internal/constants"
+	"github.com/MiravaOrg/mirava-core/pkg/apt"
 )
 
-// AptMirrorService implements the MirrorService interface for apt mirrors
 type AptMirrorService struct {
 	HttpClient *http.Client
+	// CacheTTL controls apt package/index caching (memory + disk). Zero uses apt default.
+	CacheTTL time.Duration
+	// CacheDir overrides the on-disk cache location. Empty uses the OS app cache dir
+	// (os.UserCacheDir()/mirava-core/apt, e.g. ~/Library/Caches/mirava-core/apt on macOS).
+	CacheDir string
+	// DisableDiskCache turns off persistent cache (tests only).
+	DisableDiskCache bool
+
+	once   sync.Once
+	mirror *apt.Mirror
 }
 
-// AptCheckStatusData contains detailed status check information
 type AptCheckStatusData struct {
 	Success     bool     `json:"success"`
 	TestedPaths []string `json:"tested_paths"`
@@ -25,7 +34,6 @@ type AptCheckStatusData struct {
 	Message     string   `json:"message,omitempty"`
 }
 
-// AptCheckSpeedData contains detailed speed test information
 type AptCheckSpeedData struct {
 	SpeedMBps       float64 `json:"speed_mbps"`
 	DownloadedMB    float64 `json:"downloaded_mb"`
@@ -40,12 +48,11 @@ type AptCheckSpeedData struct {
 }
 
 type AptCheckPackageParams struct {
-	Release   string `validate:"required,oneof=stable oldstable testing focal jammy buster bullseye bookworm"`
-	Component string `validate:"required,oneof=main universe contrib non-free"`
-	Arch      string `validate:"required,oneof=amd64 arm64 i386 armhf ppc64el s390x"`
+	Release   string `validate:"omitempty,oneof=stable oldstable testing focal jammy noble buster bullseye bookworm"`
+	Component string `validate:"omitempty,oneof=main universe contrib non-free restricted multiverse"`
+	Arch      string `validate:"omitempty,oneof=amd64 arm64 i386 armhf ppc64el s390x"`
 }
 
-// AptCheckPackageData contains detailed package check information
 type AptCheckPackageData struct {
 	Exists       bool     `json:"exists"`
 	PackageName  string   `json:"package_name"`
@@ -57,7 +64,20 @@ type AptCheckPackageData struct {
 	FoundPath    string   `json:"found_path,omitempty"`
 }
 
-// CheckStatus implements MirrorService.CheckMirrorStatus
+func (m *AptMirrorService) core() *apt.Mirror {
+	m.once.Do(func() {
+		m.mirror = apt.NewMirror(m.HttpClient)
+		m.mirror.CacheTTL = m.CacheTTL
+		m.mirror.CacheDir = m.CacheDir
+		m.mirror.DisableDiskCache = m.DisableDiskCache
+	})
+	return m.mirror
+}
+
+func (m *AptMirrorService) CacheDirectory() string {
+	return m.core().CacheDirectory()
+}
+
 func (m *AptMirrorService) CheckStatus(mirrorURL string, verbose bool) (bool, *AptCheckStatusData, error) {
 	testPaths := []string{
 		"/ls-lR.gz",
@@ -82,7 +102,7 @@ func (m *AptMirrorService) CheckStatus(mirrorURL string, verbose bool) (bool, *A
 		}
 
 		req.Header.Set("Cache-Control", "no-cache, no-store, must-revalidate")
-		req.Header.Set("User-Agent", USER_AGENT)
+		req.Header.Set("User-Agent", constants.UserAgent)
 
 		resp, err := m.HttpClient.Do(req)
 		if err != nil {
@@ -93,7 +113,6 @@ func (m *AptMirrorService) CheckStatus(mirrorURL string, verbose bool) (bool, *A
 		}
 		defer resp.Body.Close()
 
-		// Check if we got a successful response
 		if resp.StatusCode == http.StatusOK {
 			statusInfo.Success = true
 			statusInfo.WorkingPath = testURL
@@ -103,7 +122,6 @@ func (m *AptMirrorService) CheckStatus(mirrorURL string, verbose bool) (bool, *A
 			return true, &statusInfo, nil
 		}
 
-		// Also consider redirects as valid (some mirrors redirect)
 		if resp.StatusCode >= 300 && resp.StatusCode < 400 {
 			statusInfo.Success = true
 			statusInfo.WorkingPath = testURL
@@ -118,7 +136,6 @@ func (m *AptMirrorService) CheckStatus(mirrorURL string, verbose bool) (bool, *A
 	return false, &statusInfo, &InvalidMirrorError{URL: mirrorURL}
 }
 
-// CheckSpeed implements MirrorService.CheckMirrorSpeed
 func (m *AptMirrorService) CheckSpeed(mirrorURL string, timeout int, verbose bool) (float64, *AptCheckSpeedData, error) {
 	testURL := mirrorURL + "/ls-lR.gz"
 
@@ -137,7 +154,7 @@ func (m *AptMirrorService) CheckSpeed(mirrorURL string, timeout int, verbose boo
 	}
 
 	req.Header.Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	req.Header.Set("User-Agent", USER_AGENT)
+	req.Header.Set("User-Agent", constants.UserAgent)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
 	defer cancel()
@@ -170,7 +187,7 @@ func (m *AptMirrorService) CheckSpeed(mirrorURL string, timeout int, verbose boo
 	}
 
 	var downloaded int64
-	buf := make([]byte, 512*1024) // 512KB buffer for faster downloads
+	buf := make([]byte, 512*1024)
 	lastProgress := time.Now()
 
 	if verbose {
@@ -243,7 +260,7 @@ calculateSpeed:
 
 		if verbose {
 			fmt.Printf("Average speed: %.2f MB/s\n", speedMBps)
-			rating := getAptSpeedRating(speedMBps)
+			rating := aptSpeedRating(speedMBps)
 			fmt.Printf("Rating: %s\n", rating)
 		}
 
@@ -251,7 +268,7 @@ calculateSpeed:
 		speedInfo.DownloadedMB = float64(downloaded) / 1024 / 1024
 		speedInfo.DurationSec = duration
 		speedInfo.BytesDownloaded = downloaded
-		speedInfo.SpeedRating = getAptSpeedRating(speedMBps)
+		speedInfo.SpeedRating = aptSpeedRating(speedMBps)
 
 		return speedMBps, speedInfo, nil
 	}
@@ -263,106 +280,43 @@ calculateSpeed:
 	}
 }
 
-// CheckPackage implements MirrorService.CheckPackage
 func (m *AptMirrorService) CheckPackage(mirrorURL, packageName string, verbose bool, params AptCheckPackageParams) (bool, *AptCheckPackageData, error) {
 	packageInfo := AptCheckPackageData{
-		Exists:       false,
-		PackageName:  packageName,
-		CheckedPaths: []string{},
-		Arch:         params.Arch,
+		Exists:      false,
+		PackageName: packageName,
+		Release:     params.Release,
+		Component:   params.Component,
+		Arch:        params.Arch,
 	}
-
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-	}
-
-	packagesURL := fmt.Sprintf("%s/dists/%s/%s/binary-%s/Packages.gz",
-		mirrorURL, params.Release, params.Component, params.Arch)
-
-	packageInfo.CheckedPaths = append(packageInfo.CheckedPaths, packagesURL)
 
 	if verbose {
-		fmt.Println("Checking package in:", packagesURL)
+		fmt.Printf("Checking package %q on %s (%s/%s/%s)\n",
+			packageName, mirrorURL, params.Release, params.Component, params.Arch)
 	}
 
-	exists, version, err := m.checkPackagesFile(client, packagesURL, packageName)
+	result, err := m.core().LookupPackageVersion(mirrorURL, packageName, &apt.PackageSearch{
+		Suite:     params.Release,
+		Component: params.Component,
+		Arch:      params.Arch,
+	})
 	if err != nil {
 		if verbose {
-			fmt.Printf("Error checking %s: %v\n", packagesURL, err)
+			fmt.Printf("Error checking %q: %v\n", packageName, err)
 		}
+		return false, nil, err
 	}
 
-	if exists {
-		packageInfo.Exists = true
-		packageInfo.Version = version
-		packageInfo.Release = params.Release
-		packageInfo.Component = params.Component
-		packageInfo.FoundPath = packagesURL
+	packageInfo.Exists = true
+	packageInfo.Version = result.Version
+	packageInfo.Release = result.Suite
+	packageInfo.Component = result.Component
+	packageInfo.Arch = result.Arch
+	packageInfo.FoundPath = result.IndexPath
 
-		return true, &packageInfo, nil
-	}
-
-	return false, &packageInfo, nil
+	return true, &packageInfo, nil
 }
 
-// checkPackagesFile is an internal helper to parse Packages.gz files
-func (m *AptMirrorService) checkPackagesFile(client *http.Client, packagesURL, packageName string) (bool, string, error) {
-	req, err := http.NewRequest("GET", packagesURL, nil)
-	if err != nil {
-		return false, "", err
-	}
-
-	req.Header.Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	req.Header.Set("User-Agent", USER_AGENT)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return false, "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return false, "", fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-
-	gzReader, err := gzip.NewReader(resp.Body)
-	if err != nil {
-		return false, "", err
-	}
-	defer gzReader.Close()
-
-	scanner := bufio.NewScanner(gzReader)
-
-	var currentPackage string
-	var currentVersion string
-
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		if strings.HasPrefix(line, "Package: ") {
-			currentPackage = strings.TrimPrefix(line, "Package: ")
-		}
-
-		if strings.HasPrefix(line, "Version: ") && currentPackage == packageName {
-			currentVersion = strings.TrimPrefix(line, "Version: ")
-			return true, currentVersion, nil
-		}
-
-		if line == "" {
-			currentPackage = ""
-			currentVersion = ""
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		return false, "", err
-	}
-
-	return false, "", nil
-}
-
-// getAptSpeedRating returns a rating based on download speed in MB/s
-func getAptSpeedRating(speedMBps float64) string {
+func aptSpeedRating(speedMBps float64) string {
 	switch {
 	case speedMBps > 10:
 		return "Excellent"
@@ -375,7 +329,6 @@ func getAptSpeedRating(speedMBps float64) string {
 	}
 }
 
-// NewAptMirrorService creates a new APT mirror service instance
 func NewAptMirrorService() *AptMirrorService {
 	return &AptMirrorService{
 		HttpClient: &http.Client{
