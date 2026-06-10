@@ -601,12 +601,6 @@ func (g *gzipReadCloser) Close() error {
 	return firstErr
 }
 
-func closeAptReader(reader io.Reader) {
-	if closer, ok := reader.(io.Closer); ok {
-		_ = closer.Close()
-	}
-}
-
 func findLatestPackageInIndex(body io.Reader, packageName string) (*aptPackageCandidate, error) {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
