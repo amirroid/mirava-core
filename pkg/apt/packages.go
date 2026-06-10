@@ -97,16 +97,21 @@ func (m *Mirror) LookupPackageVersion(
 
 	client := m.httpClient()
 
-	indexPaths, err := m.discoverAptIndexPaths(client, repositoryURL)
-	if err != nil {
-		return nil, err
-	}
+	var searchPaths []aptIndexPath
+	if path, ok := exactAptIndexPath(search); ok {
+		searchPaths = []aptIndexPath{path}
+	} else {
+		indexPaths, err := m.discoverAptIndexPaths(client, repositoryURL)
+		if err != nil {
+			return nil, err
+		}
 
-	searchPaths := narrowAptSearchPaths(indexPaths, search)
-	if len(searchPaths) == 0 {
-		return nil, &InvalidMirrorError{
-			URL: repositoryURL,
-			Err: fmt.Errorf("no matching package indexes for search filters"),
+		searchPaths = narrowAptSearchPaths(indexPaths, search)
+		if len(searchPaths) == 0 {
+			return nil, &InvalidMirrorError{
+				URL: repositoryURL,
+				Err: fmt.Errorf("no matching package indexes for search filters"),
+			}
 		}
 	}
 
@@ -407,6 +412,24 @@ func fetchTextIfOK(client *http.Client, rawURL string) (string, error) {
 	}
 
 	return string(body), nil
+}
+
+func exactAptIndexPath(search *PackageSearch) (aptIndexPath, bool) {
+	if search == nil || search.Suite == "" || search.Component == "" {
+		return aptIndexPath{}, false
+	}
+
+	arch := search.Arch
+	if arch == "" {
+		arch = aptPreferredArch
+	}
+
+	return aptIndexPath{
+		Suite:     search.Suite,
+		Component: search.Component,
+		Arch:      arch,
+		File:      aptPackagesFile,
+	}, true
 }
 
 func narrowAptSearchPaths(paths []aptIndexPath, search *PackageSearch) []aptIndexPath {

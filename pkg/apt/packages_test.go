@@ -266,6 +266,45 @@ func TestFetchMirrorFileRevalidatesExpiredCache(t *testing.T) {
 	}
 }
 
+func TestLookupPackageVersionExactRelease(t *testing.T) {
+	focalIndex := strings.Join([]string{
+		"Package: nginx",
+		"Version: 1.18.0-0ubuntu1.4",
+		"Filename: pool/main/n/nginx/nginx_1.18.0-0ubuntu1.4_amd64.deb",
+		"",
+	}, "\n")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/dists/noble/Release":
+			w.Write([]byte(testReleaseBody))
+		case "/dists/focal/main/binary-amd64/Packages.gz":
+			w.Write(gzipBytes(focalIndex))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	mirror := NewMirror(nil)
+	mirror.DisableDiskCache = true
+
+	result, err := mirror.LookupPackageVersion(server.URL, "nginx", &PackageSearch{
+		Suite:     "focal",
+		Component: "main",
+		Arch:      "amd64",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Version != "1.18.0-0ubuntu1.4" {
+		t.Fatalf("unexpected version %q", result.Version)
+	}
+	if result.Suite != "focal" {
+		t.Fatalf("unexpected suite %q", result.Suite)
+	}
+}
+
 func TestDebVersionGreaterThan(t *testing.T) {
 	cases := []struct {
 		left, right string
