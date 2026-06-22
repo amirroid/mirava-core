@@ -16,15 +16,19 @@ const (
 	MirrorTypeNuget    MirrorType = "nuget"    // NuGet V3 feed mirrors
 	MirrorTypeDocker   MirrorType = "docker"   // OCI distribution / Docker registry mirrors
 	MirrorTypeComposer MirrorType = "composer" // Composer / Packagist mirrors (PHP)
+	MirrorTypeMaven    MirrorType = "maven"    // Maven repository mirrors (GAV layout)
+	MirrorTypeGradle   MirrorType = "gradle"   // Gradle Plugin Portal mirrors (/m2/ + optional portal API)
 )
 
 type MiravaService struct {
-	Apt      *AptMirrorService
-	Npm      *NpmMirrorService
-	PyPi     *PyPIMirrorService
-	Docker   *DockerMirrorService
-	Pacman   *PacmanMirrorService
-	Go       *GoMirrorService
-	Cargo    *CargoMirrorService
-	Composer *ComposerMirrorService
+	Apt                *AptMirrorService
+	Npm                *NpmMirrorService
+	PyPi               *PyPIMirrorService
+	Docker             *DockerMirrorService
+	Pacman             *PacmanMirrorService
+	Go                 *GoMirrorService
+	Cargo              *CargoMirrorService
+	Composer           *ComposerMirrorService
+	Maven              *MavenMirrorService
+	GradlePluginPortal *GradlePluginPortalMirrorService
 }

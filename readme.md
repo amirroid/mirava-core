@@ -28,6 +28,8 @@ Constants and the `MirrorService` interface live in [`pkg/type.go`](pkg/type.go)
 | **nuget** | NuGet V3 feeds | Not implemented |
 | **docker** | OCI / Docker registry mirrors | Implemented (`pkg.NewDockerMirrorService`) |
 | **composer** | Composer / Packagist | Stub (`pkg/composer.go`) |
+| **maven** | Maven repository mirrors (GAV layout) | Implemented (`pkg.NewMavenMirrorService`) |
+| **gradle** | Gradle Plugin Portal mirrors (`/m2/` layout) | Implemented (`pkg.NewGradlePluginPortalMirrorService`) |
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) to add or finish a backend.
 
@@ -80,7 +82,7 @@ func main() {
 }
 ```
 
-`CreateMiravaService` returns `*pkg.MiravaService` with **apt**, **npm**, **pypi**, and **docker** set. Other constructors (for example `pkg.NewCentOSMirrorService`) are available from `pkg` until they are added to the facade.
+`CreateMiravaService` returns `*pkg.MiravaService` with **apt**, **npm**, **pypi**, **docker**, **pacman**, **go**, **cargo**, **composer**, **maven**, and **gradle-plugin-portal** set. Other constructors (for example `pkg.NewCentOSMirrorService`) are available from `pkg` until they are added to the facade.
 
 - npm speed checks: optional `*pkg.NpmCheckSpeedParams`
 - Docker speed checks: `*pkg.DockerSpeedParams` where applicable  
